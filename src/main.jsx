@@ -40,6 +40,24 @@ function FileIcon({ type }) {
   return <span className={`file-icon ${type}`}>{type === 'go' ? 'Go' : type === 'mod' ? 'M' : '#'} </span>
 }
 
+function escapeHtml(value) {
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+}
+
+function highlightGo(value) {
+  const tokenPattern = /(\/\/.*$|"(?:\\.|[^"\\])*"|\b(?:package|import|func|return|var|const|type|struct|interface|if|else|for|range|go|defer|switch|case|default|break|continue|map|chan|select)\b|\b(?:string|int|bool|error|byte|rune|float64|nil|true|false)\b|\b\d+(?:\.\d+)?\b)/gm
+  let html = ''
+  let last = 0
+  for (const match of value.matchAll(tokenPattern)) {
+    html += escapeHtml(value.slice(last, match.index))
+    const token = escapeHtml(match[0])
+    const kind = match[0].startsWith('//') ? 'comment' : match[0].startsWith('"') ? 'string' : /^(string|int|bool|error|byte|rune|float64|nil|true|false)$/.test(match[0]) ? 'type' : /^\d/.test(match[0]) ? 'number' : 'keyword'
+    html += `<span class="tok-${kind}">${token}</span>`
+    last = match.index + match[0].length
+  }
+  return html + escapeHtml(value.slice(last)) + (value.endsWith('\n') ? ' ' : '')
+}
+
 function App() {
   const [code, setCode] = useState(initialCode)
   const [dark, setDark] = useState(true)
@@ -49,6 +67,7 @@ function App() {
   const [saved, setSaved] = useState(true)
   const [cursor, setCursor] = useState({ line: 7, col: 1 })
   const editorRef = useRef(null)
+  const highlightRef = useRef(null)
 
   const lines = useMemo(() => code.split('\n'), [code])
   const runCode = async () => {
@@ -75,9 +94,22 @@ function App() {
   const onEditorChange = (event) => { setCode(event.target.value); setSaved(false) }
   const onEditorKeyDown = (event) => {
     if (event.key === 'Tab') { event.preventDefault(); const el = event.currentTarget; const start = el.selectionStart; setCode(code.slice(0, start) + '    ' + code.slice(el.selectionEnd)); requestAnimationFrame(() => { el.selectionStart = el.selectionEnd = start + 4 }) }
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      const el = event.currentTarget
+      const start = el.selectionStart
+      const currentLine = code.slice(0, start).split('\n').at(-1)
+      const currentIndent = currentLine.match(/^\s*/)?.[0] || ''
+      const trimmed = currentLine.trim()
+      const nextIndent = /[{[(]$/.test(trimmed) ? `${currentIndent}\t` : /^[}\])]/.test(code.slice(start).trimStart()) ? currentIndent.slice(0, Math.max(0, currentIndent.length - 1)) : currentIndent
+      const insertion = `\n${nextIndent}`
+      setCode(code.slice(0, start) + insertion + code.slice(el.selectionEnd))
+      requestAnimationFrame(() => { el.selectionStart = el.selectionEnd = start + insertion.length })
+    }
     if ((event.metaKey || event.ctrlKey) && event.key === 's') { event.preventDefault(); setSaved(true) }
   }
   const syncCursor = (event) => { const before = code.slice(0, event.target.selectionStart); setCursor({ line: before.split('\n').length, col: before.split('\n').at(-1).length + 1 }) }
+  const syncScroll = (event) => { if (highlightRef.current) { highlightRef.current.scrollTop = event.currentTarget.scrollTop; highlightRef.current.scrollLeft = event.currentTarget.scrollLeft } }
 
   return <div className={`app ${dark ? 'dark' : 'light'}`}>
     <header className="topbar">
@@ -86,21 +118,12 @@ function App() {
       <div className="top-actions"><button className="icon-button" title="Toggle theme" onClick={() => setDark(!dark)}><Icon name={dark ? 'sun' : 'moon'} size={17} /></button><button className="avatar">F</button></div>
     </header>
     <div className="workspace">
-      <aside className="activitybar">
-        <button className="activity active"><Icon name="files" /></button><button className="activity"><Icon name="search" /></button><button className="activity"><Icon name="git" /></button><div className="activity-spacer" /><button className="activity"><Icon name="settings" /></button>
-      </aside>
-      <aside className="sidebar">
-        <div className="sidebar-header"><span>EXPLORER</span><button className="ghost-icon"><Icon name="close" size={15} /></button></div>
-        <div className="workspace-label"><Icon name="chevron" size={13} /><span>HELLO-GO</span></div>
-        <nav className="file-list">{files.map(file => <button key={file.name} className={`file-row ${activeFile === file.name ? 'selected' : ''}`} onClick={() => setActiveFile(file.name)}><FileIcon type={file.type} /><span>{file.name}</span>{file.name === activeFile && !saved && <i className="unsaved" />}</button>)}</nav>
-        <div className="sidebar-footer"><span className="dot green" />Go 1.22.4</div>
-      </aside>
       <main className="main-area">
         <div className="editor-tabs"><button className="tab active"><FileIcon type="go" /><span>{activeFile}</span>{!saved && <i className="unsaved" />}<Icon name="close" size={14} /></button><div className="tab-spacer" /><button className="action-button" onClick={runCode}><Icon name={output.status === 'running' ? 'stop' : 'play'} size={14} />{output.status === 'running' ? 'Running' : 'Run'}<kbd>⌘ ↵</kbd></button></div>
         <div className="breadcrumb"><span>hello-go</span><span>/</span><b>{activeFile}</b><span className="editor-info">Go · UTF-8 · LF</span></div>
         <section className="editor-wrap">
           <div className="line-numbers">{lines.map((_, i) => <span key={i} className={cursor.line === i + 1 ? 'current' : ''}>{i + 1}</span>)}</div>
-          <textarea ref={editorRef} value={code} onChange={onEditorChange} onKeyDown={onEditorKeyDown} onClick={syncCursor} onKeyUp={syncCursor} spellCheck="false" aria-label="Go source editor" />
+          <div className="code-stage"><pre ref={highlightRef} className="highlight-layer" aria-hidden="true" dangerouslySetInnerHTML={{ __html: highlightGo(code) }} /><textarea ref={editorRef} value={code} onChange={onEditorChange} onKeyDown={onEditorKeyDown} onClick={syncCursor} onKeyUp={syncCursor} onScroll={syncScroll} spellCheck="false" aria-label="Go source editor" /></div>
         </section>
         {bottomOpen && <section className="output-panel"><div className="panel-tabs"><button className="panel-tab active"><Icon name="terminal" size={14} />TERMINAL</button><button className="panel-tab">PROBLEMS <span className="count">{output.status === 'error' ? 1 : 0}</span></button><div className="panel-actions"><span className="compile-status"><span className={`dot ${output.status === 'error' ? 'red' : output.status === 'running' ? 'yellow' : 'green'}`} />{output.status === 'running' ? 'Compiling' : output.status === 'error' ? 'Failed' : 'Ready'}</span><button className="ghost-icon" onClick={() => setBottomOpen(false)}><Icon name="close" size={15} /></button></div></div><pre className={`output ${output.status}`}>{output.status === 'success' && <span className="output-label">OUTPUT  ·  go.dev playground</span>}{output.text}</pre></section>}
         <footer className="statusbar"><span><span className="dot green" />Connected</span><span>Go 1.22.4</span><span>Ln {cursor.line}, Col {cursor.col}</span><span className="status-spacer" /><span>{saved ? 'Saved' : 'Unsaved changes'}</span><span>UTF-8</span><span>LF</span></footer>
